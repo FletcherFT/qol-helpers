@@ -7,9 +7,11 @@ import argparse
 import mimetypes
 import uuid
 import json
-from multiprocessing.pool import ThreadPool
+from multiprocessing.pool import ThreadPool, Pool
 import itertools
 import tqdm
+from qolhelpers.images import threshold_and_crop, detect_anomalies
+import cv2
 
 
 def find_files(extension: str, paths: List[Path], recursive: bool = False) -> List[Path]:
@@ -59,6 +61,25 @@ def parse_args():
     copy_images.add_argument("-i", "--images", type=str, nargs="+", help="File extensions to search for.", default=list(get_extensions_for_type("image")))
     copy_images.add_argument("-u", "--uuid", action="store_true", help="Generate UUIDv4s for files. Ensures all images are copied.")
     copy_images.add_argument("--dry_run", action="store_true", help="Do not copy, just output mappings.")
+    crop_images = subparsers.add_parser("crop_images",
+                                        add_help=False,
+                                        description="Crop images from directories to a destination.")
+    crop_images.add_argument("folders", type=Path, nargs="+", help="Directories to search through, can also be a json file with a dictionary mapping destination keys to source values.")
+    crop_images.add_argument("-o", "--output", default=".", type=Path, help="Folder to copy images into. Default current folder.")
+    crop_images.add_argument("-i", "--images", type=str, nargs="+", help="File extensions to search for.", default=list(get_extensions_for_type("image")))
+    crop_images.add_argument("-p", "--padding", type=int, default=0, help="Pad the crop.")
+    crop_images.add_argument("--dry_run", action="store_true", help="Do not copy, just output mappings.")
+    detect_anomalies = subparsers.add_parser("detect_anomalies",
+                                        add_help=False,
+                                        description="Detect anomalies.")
+    detect_anomalies.add_argument("folders", type=Path, nargs="+",
+                             help="Directories to search through, can also be a json file with a dictionary mapping destination keys to source values.")
+    detect_anomalies.add_argument("-o", "--output", default="./anomalies.txt", type=Path,
+                             help="File to copy images into. Default ./anomalies.txt")
+    detect_anomalies.add_argument("-i", "--images", type=str, nargs="+", help="File extensions to search for.",
+                             default=list(get_extensions_for_type("image")))
+    detect_anomalies.add_argument("-c", "--clusters", type=int, default=10, help="Number of clusters to attempt anomaly detection across.")
+    detect_anomalies.add_argument("--dry_run", action="store_true", help="Do not copy, just output mappings.")
     args = parent_parser.parse_args()
     return args
 
@@ -141,8 +162,60 @@ def copy_images(args: argparse.Namespace):
         if args.verbose and args.dry_run:
             print("Dry run complete.")
 
+def crop_worker(args: argparse.Namespace):
+    def do_work(mapping):
+        if not args.dry_run:
+            if Path(mapping[0]).exists():
+                if args.verbose:
+                    print(f"File exists ", mapping[0])
+                    return False
+            if args.verbose:
+                print(f"cropping {mapping[1]} to {mapping[0]}")
+            img = threshold_and_crop(mapping[1], args.padding)
+            return cv2.imwrite(mapping[0], img)
+        return True
+    return do_work
+
+
+def crop_images(args: argparse.Namespace):
+    # Check the output directory exists
+    args.output.mkdir(exist_ok=True, parents=True)
+    destination_parent = args.output.resolve()
+    # Create iterator for searching source directories for images
+    search_results = search4images(args)
+    mappings = {}
+    # Create mappings from source to destination
+    for item in tqdm.tqdm(search_results, desc="Finding images..."):
+        if isinstance(item, Path):
+            destination = destination_parent.joinpath(item.name)
+            source = item
+        elif isinstance(item, tuple):
+            destination = item[0]
+            source = item[1]
+        else:
+            raise ValueError("Item is of type: ", type(item), ". Should be either Path or tuple.")
+        if str(destination) in mappings:
+            if args.verbose:
+                print("Already mapped: ", item)
+            continue
+        mappings.update({str(destination): str(source)})
+    with ThreadPool(processes=10) as pool:
+        worker = crop_worker(args)
+        results = pool.map(worker, mappings.items())
+        for res in tqdm.tqdm(results, desc="Cropping..."):
+            pass
+        if args.verbose and args.dry_run:
+            print("Dry run complete.")
+
 
 if __name__ == "__main__":
     args = parse_args()
     if args.command == "copy_images":
         copy_images(args)
+    if args.command == "crop_images":
+        crop_images(args)
+    if args.command == "detect_anomalies":
+        imgs = search4images(args)
+        outliers = detect_anomalies(imgs, 5)
+        with open(args.output, "w") as f:
+            f.writelines([str(o)+'\n' for o in outliers])
