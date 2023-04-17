@@ -1,7 +1,3 @@
-from typing import List
-from pathlib import Path
-from datetime import datetime
-import re
 import shutil
 import argparse
 import mimetypes
@@ -10,46 +6,62 @@ import json
 from multiprocessing.pool import ThreadPool
 import itertools
 import tqdm
-from concurrent.futures import ThreadPoolExecutor
+import concurrent.futures
 from pathlib import Path
-from typing import List, Union, Generator
+from typing import Sequence, Tuple, List, Union
+import sys
+import os
 
 
-def find_files_worker(extension: str, path: Path, recursive: bool) -> List[Path]:
-    if not extension.startswith("."):
-        extension = "." + extension
-    if path.is_dir():
-        return list(path.rglob(f"*{extension}")) if recursive else list(path.glob(f"*{extension}"))
-    else:
-        return []
-
-
-def find_files(extension: str, paths: List[Path], recursive: bool = False, num_threads: int = 4) -> List[Path]:
-    """
-        Finds files with the specified extension in the specified paths and returns them as  a list.
-        :param extension: The extension of the file, starts with a '.' (e.g. '.png')
-        :param paths:  A list of Path objects pointing to specific files, or directories to search.
-        :param recursive: Flag to indicate if the directory search should be recursive or not.
-        :param num_threads: Number of worker threads to complete search.
-        :return: A list of valid Path objects.
-    """
-    if not extension.startswith("."):
-        extension = "." + extension
+def find_files_threaded(path: os.PathLike, extensions: Sequence[str], recursive: bool) -> List[Path]:
+    # Make the path of type pathlib.Path
+    if not isinstance(path, Path):
+        path = Path(path)
     file_paths = []
-
-    with ThreadPoolExecutor(max_workers=num_threads) as executor:
-        tasks = [executor.submit(find_files_worker, extension, path, recursive) for path in paths]
-        for task in tasks:
-            try:
-                result = task.result()
-                file_paths.extend(result)
-            except Exception as e:
-                print(f"An error occurred: {e}")
+    if not path.exists():
+        print(f"Could not find {path}.", file=sys.stderr)
+        return file_paths
+    # If the path is a directory, glob for the extensions
+    if path.is_dir():
+        for ext in extensions:
+            file_paths.extend(path.rglob(f"*{ext}")) if recursive else file_paths.extend(path.glob(f"*{ext}"))
+    # If it's a file, check that it has a matching extension.
+    elif path.is_file():
+        if path.suffix not in extensions:
+            print(f"Not one of the specified file types: {path}.", file=sys.stderr)
+            return file_paths
+        file_paths.append(path)
+    else:
+        print(f"Not a file or directory: {path}", file=sys.stderr)
 
     return file_paths
 
 
+def find_files(extensions: Union[str, Sequence[str]], paths: Union[os.PathLike, Sequence[os.PathLike]],
+               recursive: bool = False, num_threads: int = 4) -> Tuple[Path]:
+    """
+            Finds files with the specified extensions in the specified paths and returns them as a tuple.
+            :param extensions: The extension of the file, starting with a '.' is optional (e.g. '.png')
+            :param paths:  A list of Path objects pointing to specific files, or directories to search.
+            :param recursive: Flag to indicate if the directory search should be recursive or not.
+            :param num_threads: Number of worker threads to complete search.
+            :return: A tuple of valid Path objects.
+        """
+    extensions = [ext if ext.startswith(".") else "." + ext for ext in extensions]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+        tasks = [executor.submit(find_files_threaded, path, extensions, recursive) for path in paths]
+        file_paths = sum([result for task in concurrent.futures.as_completed(tasks) for result in task.result()])
+
+    return tuple(file_paths)
+
+
 def get_extensions_for_type(general_type):
+    """
+    A tool to list all the possible extensions for a given file type.
+    :param general_type:
+    :return:
+    """
     mimetypes.init()
     for ext in mimetypes.types_map:
         if mimetypes.types_map[ext].split('/')[0] == general_type:
