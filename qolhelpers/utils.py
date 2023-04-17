@@ -3,7 +3,7 @@ import argparse
 import mimetypes
 import uuid
 import json
-from multiprocessing.pool import ThreadPool, Pool
+from multiprocessing.pool import ThreadPool
 import itertools
 import tqdm
 import concurrent.futures
@@ -182,6 +182,7 @@ def copy_images(args: argparse.Namespace):
             pass
         if args.verbose and args.dry_run:
             print("Dry run complete.")
+
 
 def crop_worker(args: argparse.Namespace):
     def do_work(mapping):
