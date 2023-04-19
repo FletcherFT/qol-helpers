@@ -1,10 +1,9 @@
+import multiprocessing
 import shutil
 import argparse
 import mimetypes
 import uuid
 import json
-from multiprocessing.pool import ThreadPool
-import itertools
 import tqdm
 import concurrent.futures
 from pathlib import Path
@@ -53,7 +52,7 @@ def find_files(extensions: Union[str, Sequence[str]], paths: Union[os.PathLike, 
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
         tasks = [executor.submit(find_files_threaded, path, extensions, recursive) for path in paths]
-        file_paths = sum([result for task in concurrent.futures.as_completed(tasks) for result in task.result()])
+        file_paths = [result for task in concurrent.futures.as_completed(tasks) for result in task.result()]
 
     return tuple(file_paths)
 
@@ -81,7 +80,10 @@ def parse_args():
     copy_images.add_argument("-o", "--output", default=".", type=Path, help="Folder to copy images into. Default current folder.")
     copy_images.add_argument("-i", "--images", type=str, nargs="+", help="File extensions to search for.", default=list(get_extensions_for_type("image")))
     copy_images.add_argument("-u", "--uuid", action="store_true", help="Generate UUIDv4s for files. Ensures all images are copied.")
+    copy_images.add_argument("-r", "--recursive", action="store_true", help="Flag to recursively search directories.")
     copy_images.add_argument("--dry_run", action="store_true", help="Do not copy, just output mappings.")
+    copy_images.add_argument("-w", "--workers", type=int, default=multiprocessing.cpu_count() - 1,
+                             help="Specify number of workers.")
     crop_images = subparsers.add_parser("crop_images",
                                         add_help=False,
                                         description="Crop images from directories to a destination.")
@@ -89,6 +91,8 @@ def parse_args():
     crop_images.add_argument("-o", "--output", default=".", type=Path, help="Folder to copy images into. Default current folder.")
     crop_images.add_argument("-i", "--images", type=str, nargs="+", help="File extensions to search for.", default=list(get_extensions_for_type("image")))
     crop_images.add_argument("-p", "--padding", type=int, default=0, help="Pad the crop.")
+    crop_images.add_argument("-r", "--recursive", action="store_true", help="Flag to recursively search directories.")
+    crop_images.add_argument("-w", "--workers", type=int, default=multiprocessing.cpu_count() - 1, help="Specify number of workers.")
     crop_images.add_argument("--dry_run", action="store_true", help="Do not copy, just output mappings.")
     detect_anomalies = subparsers.add_parser("detect_anomalies",
                                         add_help=False,
@@ -121,28 +125,17 @@ def expand_json_mappings(json_paths: List[Path]):
     return mappings
 
 
-def search4images(args: argparse.Namespace):
-    image_paths = [path for path in args.folders if path.suffix in args.images and path.exists()]
-    json_paths = [path for path in args.folders if path.suffix == ".json" and path.exists()]
-    json_mappings = expand_json_mappings(json_paths)
-    dir_paths = [path for path in args.folders if path.is_dir() and path.exists()]
-    combinations = [{"path": p, "suffix": s} for p, s in itertools.product(dir_paths, args.images)]
-    with ThreadPool(processes=10) as pool:
-        results = pool.map(glob_suffix, combinations)
-        output = itertools.chain(json_mappings.items(), *image_paths, *results)
-    return output
-
-
 def copy_worker(args: argparse.Namespace):
-    def do_work(mapping):
+    def do_work(image_path: Path):
         if not args.dry_run:
-            if Path(mapping[0]).exists():
+            output_path = args.output.joinpath(image_path.name) if not args.uuid else args.output.joinpath(image_path.stem + f"_{uuid.uuid4()}" + image_path.suffix)
+            if output_path.exists():
                 if args.verbose:
-                    print(f"File exists ", mapping[0])
+                    print(f"File exists ", output_path)
                     return False
             if args.verbose:
-                print(f"copying {mapping[1]} to {mapping[0]}")
-            shutil.copy2(mapping[1], mapping[0])
+                print(f"Copying {image_path} to {output_path}")
+            shutil.copy2(str(image_path), str(output_path))
         return True
     return do_work
 
@@ -150,51 +143,32 @@ def copy_worker(args: argparse.Namespace):
 def copy_images(args: argparse.Namespace):
     # Check the output directory exists
     args.output.mkdir(exist_ok=True, parents=True)
-    destination_parent = args.output.resolve()
     # Create iterator for searching source directories for images
-    search_results = search4images(args)
-    mappings = {}
-    # Create mappings from source to destination
-    for item in tqdm.tqdm(search_results, desc="Finding images..."):
-        if isinstance(item, Path):
-            # TODO consider UUIDs to prevent overwriting of images with same filenames.
-            if args.uuid:
-                destination = destination_parent.joinpath(item.stem + f"_{uuid.uuid4()}" + item.suffix)
-            else:
-                destination = destination_parent.joinpath(item.name)
-            source = item
-        elif isinstance(item, tuple):
-            destination = item[0]
-            source = item[1]
-        else:
-            raise ValueError("Item is of type: ", type(item), ". Should be either Path or tuple.")
-        if str(destination) in mappings:
-            if args.verbose:
-                print("Already mapped: ", item)
-            continue
-        mappings.update({str(destination): str(source)})
-    with open(args.output.joinpath("image_mappings.json"), "w") as f:
-        json.dump(mappings, f)
-    with ThreadPool(processes=10) as pool:
-        worker = copy_worker(args)
-        results = pool.map(worker, mappings.items())
-        for res in tqdm.tqdm(results, desc="Copying..."):
-            pass
-        if args.verbose and args.dry_run:
-            print("Dry run complete.")
+    image_paths = find_files(args.images, args.folders, args.recursive, args.workers)
+    # Create automatic crops from source to destination
+    with tqdm.tqdm(total=len(image_paths), desc="Copying...") as pbar:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
+            worker = copy_worker(args)
+            futures = [pool.submit(worker, image_path) for image_path in image_paths]
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                pbar.update(1)
+            if args.verbose and args.dry_run:
+                print("Dry run complete.")
 
 
 def crop_worker(args: argparse.Namespace):
-    def do_work(mapping):
+    def do_work(image_path: Path):
         if not args.dry_run:
-            if Path(mapping[0]).exists():
+            output_path = args.output.joinpath(image_path.name)
+            if output_path.exists():
                 if args.verbose:
-                    print(f"File exists ", mapping[0])
+                    print(f"File exists ", output_path)
                     return False
             if args.verbose:
-                print(f"cropping {mapping[1]} to {mapping[0]}")
-            img = threshold_and_crop(mapping[1], args.padding)
-            return cv2.imwrite(mapping[0], img)
+                print(f"Cropping {image_path} to {output_path}")
+            img = threshold_and_crop(image_path, args.padding)
+            return cv2.imwrite(str(output_path), img)
         return True
     return do_work
 
@@ -202,32 +176,18 @@ def crop_worker(args: argparse.Namespace):
 def crop_images(args: argparse.Namespace):
     # Check the output directory exists
     args.output.mkdir(exist_ok=True, parents=True)
-    destination_parent = args.output.resolve()
     # Create iterator for searching source directories for images
-    search_results = search4images(args)
-    mappings = {}
-    # Create mappings from source to destination
-    for item in tqdm.tqdm(search_results, desc="Finding images..."):
-        if isinstance(item, Path):
-            destination = destination_parent.joinpath(item.name)
-            source = item
-        elif isinstance(item, tuple):
-            destination = item[0]
-            source = item[1]
-        else:
-            raise ValueError("Item is of type: ", type(item), ". Should be either Path or tuple.")
-        if str(destination) in mappings:
-            if args.verbose:
-                print("Already mapped: ", item)
-            continue
-        mappings.update({str(destination): str(source)})
-    with ThreadPool(processes=10) as pool:
-        worker = crop_worker(args)
-        results = pool.map(worker, mappings.items())
-        for res in tqdm.tqdm(results, desc="Cropping..."):
-            pass
-        if args.verbose and args.dry_run:
-            print("Dry run complete.")
+    image_paths = find_files(args.images, args.folders, args.recursive, args.workers)
+    # Create automatic crops from source to destination
+    with tqdm.tqdm(total=len(image_paths), desc="Cropping...") as pbar:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
+            worker = crop_worker(args)
+            futures = [pool.submit(worker, image_path) for image_path in image_paths]
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                pbar.update(1)
+            if args.verbose and args.dry_run:
+                print("Dry run complete.")
 
 
 if __name__ == "__main__":
@@ -237,7 +197,8 @@ if __name__ == "__main__":
     if args.command == "crop_images":
         crop_images(args)
     if args.command == "detect_anomalies":
-        imgs = search4images(args)
-        outliers = detect_anomalies(imgs, 5)
-        with open(args.output, "w") as f:
-            f.writelines([str(o)+'\n' for o in outliers])
+        raise NotImplementedError("Anomaly detection requires more work.")
+        # imgs = search4images(args)
+        # outliers = detect_anomalies(imgs, 5)
+        # with open(args.output, "w") as f:
+        #     f.writelines([str(o)+'\n' for o in outliers])

@@ -17,7 +17,7 @@ def extract_features(image_file: Path):
 
 
 def load_images_and_extract_features(image_directory: Union[List[Path], Generator[Path, None, None]]):
-    with Pool(processes=cpu_count()) as pool:
+    with Pool(processes=cpu_count() - 1) as pool:
         results = pool.map(extract_features, image_directory)
     image_directory, features = zip(*results)
     return list(image_directory), features
