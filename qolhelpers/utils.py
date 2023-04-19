@@ -74,9 +74,9 @@ def parse_args():
     parent_parser.add_argument("-v", "--verbose", action="store_true", help="Print information.")
     subparsers = parent_parser.add_subparsers(dest="command")
     copy_images = subparsers.add_parser("copy_images",
-                                        add_help=False,
+                                        add_help=True,
                                         description="Copy images from directories to a destination.")
-    copy_images.add_argument("folders", type=Path, nargs="+", help="Directories to search through, can also be a json file with a dictionary mapping destination keys to source values.")
+    copy_images.add_argument("folders", type=Path, nargs="+", help="Directories to search through.")
     copy_images.add_argument("-o", "--output", default=".", type=Path, help="Folder to copy images into. Default current folder.")
     copy_images.add_argument("-i", "--images", type=str, nargs="+", help="File extensions to search for.", default=list(get_extensions_for_type("image")))
     copy_images.add_argument("-u", "--uuid", action="store_true", help="Generate UUIDv4s for files. Ensures all images are copied.")
@@ -85,9 +85,9 @@ def parse_args():
     copy_images.add_argument("-w", "--workers", type=int, default=multiprocessing.cpu_count() - 1,
                              help="Specify number of workers.")
     crop_images = subparsers.add_parser("crop_images",
-                                        add_help=False,
+                                        add_help=True,
                                         description="Crop images from directories to a destination.")
-    crop_images.add_argument("folders", type=Path, nargs="+", help="Directories to search through, can also be a json file with a dictionary mapping destination keys to source values.")
+    crop_images.add_argument("folders", type=Path, nargs="+", help="Directories to search through.")
     crop_images.add_argument("-o", "--output", default=".", type=Path, help="Folder to copy images into. Default current folder.")
     crop_images.add_argument("-i", "--images", type=str, nargs="+", help="File extensions to search for.", default=list(get_extensions_for_type("image")))
     crop_images.add_argument("-p", "--padding", type=int, default=0, help="Pad the crop.")
@@ -95,10 +95,10 @@ def parse_args():
     crop_images.add_argument("-w", "--workers", type=int, default=multiprocessing.cpu_count() - 1, help="Specify number of workers.")
     crop_images.add_argument("--dry_run", action="store_true", help="Do not copy, just output mappings.")
     detect_anomalies = subparsers.add_parser("detect_anomalies",
-                                        add_help=False,
+                                        add_help=True,
                                         description="Detect anomalies.")
     detect_anomalies.add_argument("folders", type=Path, nargs="+",
-                             help="Directories to search through, can also be a json file with a dictionary mapping destination keys to source values.")
+                             help="Directories to search through.")
     detect_anomalies.add_argument("-o", "--output", default="./anomalies.txt", type=Path,
                              help="File to copy images into. Default ./anomalies.txt")
     detect_anomalies.add_argument("-i", "--images", type=str, nargs="+", help="File extensions to search for.",
