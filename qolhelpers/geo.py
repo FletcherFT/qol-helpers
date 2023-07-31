@@ -53,7 +53,7 @@ class LatLong:
             lat_deg = -int(abs(self.latitude)) if self.latitude < 0 else int(abs(self.latitude))
             lat_min = abs(self.latitude) % 1 * -60 if self.latitude < 0 else abs(self.latitude) % 1 * 60
             lon_deg = -int(abs(self.longitude)) if self.longitude < 0 else int(abs(self.longitude))
-            lon_min = abs(self.longitude) % 1 * -60 if self.longitude < 0 else bs(self.longitude) % 1 * 60
+            lon_min = abs(self.longitude) % 1 * -60 if self.longitude < 0 else abs(self.longitude) % 1 * 60
             return (lat_deg, lat_min), (lon_deg, lon_min)
         else:
             lat_deg = [-int(abs(lat)) if lat < 0 else int(abs(lat)) for lat in self.latitude]
